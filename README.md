@@ -20,7 +20,7 @@ Knowledge distillation has achieved remarkable success in neural network compres
 - matplotlib (for visualization)
 
 # The overall framework
-![Fig2.pdf](https://github.com/user-attachments/files/23647126/Fig2.pdf)
+![Framework.pdf](https://github.com/CaoQiZhi/GK-DFD/blob/main/Fig/Framework.pdf)
 # Graph Knowledge 
 ![Fig3.pdf](https://github.com/user-attachments/files/23647199/Fig3.pdf)
 
