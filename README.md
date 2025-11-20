@@ -22,7 +22,7 @@ Knowledge distillation has achieved remarkable success in neural network compres
 # The overall framework
 ![Overall](https://github.com/kbzhang0505/RPC/assets/97494153/f5ef7938-e72b-4b6f-899e-1bf184ad4d98)
 # Knowledge Review and Preview Distillation
-![Fig3](https://github.com/kbzhang0505/RPC/assets/97494153/b8c3019f-ee50-4ee0-9020-687832e2171a)
+(https://github.com/CaoQiZhi/GK-DFD/blob/main/Fig/Graph.pdf)
 # Response Correction Mechanism
 ![Fig5](https://github.com/kbzhang0505/RPC/assets/97494153/21fc38c7-4c07-484f-aab1-e49aed2c5c93)
 
