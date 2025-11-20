@@ -20,20 +20,12 @@ Knowledge distillation has achieved remarkable success in neural network compres
 - matplotlib (for visualization)
 
 # The overall framework
-![Framework.pdf](https://github.com/CaoQiZhi/GK-DFD/blob/main/Fig/Framework.pdf)
+![Framework.png](https://github.com/CaoQiZhi/GK-DFD/blob/main/Fig/Framework.png)
+The blue shapes represent the anchor samples, the green ones represent samples of the same class as the anchor, and the gray represent samples in class different from the anchor.
 # Graph Knowledge 
-![Fig3.pdf](https://github.com/user-attachments/files/23647199/Fig3.pdf)
+<img src="https://github.com/CaoQiZhi/GK-DFD/blob/main/Fig/Graph.png" alt="Graph" width="600" height="350">
 
-### Dataset Structure ###
-For training, you need to build the new directory.
-
-*├─data 
-
-**└─Cifar100 
-
-**└─ImageNet
-
-*├─logs 
+Different vertices and edges possess distinct embedding information while sharing consistent global embeddings within the same graph. The graph serves as a medium for transferring knowledge from the teacher model to the student model.
 ### Weights ###
 The weights of student models are available at https://pan.baidu.com/s/1d9CkeMjBfWEU3DPPXR8Pjg?pwd=0207.
 
