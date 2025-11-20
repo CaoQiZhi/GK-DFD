@@ -20,9 +20,9 @@ Knowledge distillation has achieved remarkable success in neural network compres
 - matplotlib (for visualization)
 
 # The overall framework
-[Fig2.pdf](https://github.com/user-attachments/files/23647126/Fig2.pdf)
+![Fig2.pdf](https://github.com/user-attachments/files/23647126/Fig2.pdf)
 # Graph Knowledge 
-[Fig3.pdf](https://github.com/user-attachments/files/23647199/Fig3.pdf)
+![Fig3.pdf](https://github.com/user-attachments/files/23647199/Fig3.pdf)
 
 ### Dataset Structure ###
 For training, you need to build the new directory.
