@@ -28,8 +28,11 @@ Knowledge distillation has achieved remarkable success in neural network compres
 For training, you need to build the new directory.
 
 *├─data 
+
 **└─Cifar100 
+
 **└─ImageNet
+
 *├─logs 
 ### Weights ###
 The weights of student models are available at https://pan.baidu.com/s/1d9CkeMjBfWEU3DPPXR8Pjg?pwd=0207.
