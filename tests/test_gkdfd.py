@@ -26,6 +26,12 @@ class ClassBalancedBatchSamplerTest(unittest.TestCase):
             if batch_index == 9:
                 break
 
+    def test_batch_size_must_be_divisible_by_class_count(self):
+        targets = np.repeat(np.arange(4), 4)
+        with self.assertRaises(ValueError):
+            ClassBalancedBatchSampler(targets, batch_size=7,
+                                      classes_per_batch=4)
+
 
 class GKDFDLossTest(unittest.TestCase):
     def test_forward_and_backward_are_finite(self):
@@ -36,6 +42,7 @@ class GKDFDLossTest(unittest.TestCase):
             gkdfd_cac_scale=0.5,
             gkdfd_pca_ratio=2.0,
             gkdfd_k1=7,
+            gkdfd_k2=56,
             gkdfd_inter_weight=-1.0,
             gkdfd_dla_dim=0,
         )
@@ -58,7 +65,41 @@ class GKDFDLossTest(unittest.TestCase):
 
         self.assertTrue(torch.isfinite(loss))
         self.assertGreater(feature_s.grad.norm().item(), 0)
-        self.assertGreater(logit_s.grad.norm().item(), 0)
+        # The paper defines one shared topology from teacher logits; student
+        # logits therefore receive no gradient from GK-DFD itself.
+        self.assertIsNone(logit_s.grad)
+
+    def test_uem_cac_is_shared_positive_symmetric_topology(self):
+        options = SimpleNamespace(
+            s_dim=4, t_dim=4, feat_dim=8, gkdfd_cac_scale=0.5,
+            gkdfd_pca_ratio=2.0, gkdfd_k1=2, gkdfd_k2=3,
+            gkdfd_dla_dim=0,
+        )
+        criterion = GKDFDLoss(options)
+        logits = torch.tensor([[5., 0., 0.], [5., 0., 0.], [0., 5., 0.]])
+        target = torch.tensor([0, 0, 1])
+        adjacency = criterion._uem_adjacency(logits, target)
+        self.assertTrue(torch.equal(adjacency, adjacency.t()))
+        self.assertTrue(torch.all(adjacency >= 0))
+        # Same-class edges are not CAC-attenuated; cross-class edges are.
+        self.assertGreater(adjacency[0, 1], adjacency[0, 2])
+        self.assertTrue(torch.all(adjacency.diag() > 0))
+
+    def test_signed_alignment_selects_k1_and_k2_neighbors(self):
+        options = SimpleNamespace(
+            s_dim=4, t_dim=4, feat_dim=6, gkdfd_cac_scale=0.5,
+            gkdfd_pca_ratio=1.0, gkdfd_k1=2, gkdfd_k2=3,
+            gkdfd_dla_dim=0,
+        )
+        criterion = GKDFDLoss(options)
+        target = torch.tensor([0, 0, 0, 0, 1, 1, 1, 1])
+        reference = torch.randn(8, 6)
+        selected = criterion._select_neighbors(reference, target)
+        self.assertTrue(all(p.numel() == 2 and n.numel() == 3
+                            for p, n in selected))
+        alignment = criterion._relation_weights(reference, target)
+        self.assertTrue(torch.allclose(alignment, alignment.t()))
+        self.assertTrue(torch.isfinite(alignment).all())
 
 
 if __name__ == '__main__':

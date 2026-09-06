@@ -5,4 +5,6 @@ python train_student.py \
   --distill gkdfd \
   --model_s resnet8x4 \
   --batch_size 64 \
+  --gkdfd_k1 7 \
+  --gkdfd_k2 56 \
   --trial 1

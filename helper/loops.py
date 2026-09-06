@@ -146,6 +146,9 @@ def train_distill(epoch, train_loader, module_list, criterion_list, optimizer, o
             loss_kd = (
                 opt.alpha * loss_graph
                 + opt.beta * loss_feature
+                # Equation (21) has no KL term.  Keep this opt-in extension
+                # for compatibility with older experiments, disabled by the
+                # default parser value of zero.
                 + opt.gkdfd_kd_weight * loss_div
             )
         elif opt.distill == 'attention':
@@ -199,6 +202,7 @@ def train_distill(epoch, train_loader, module_list, criterion_list, optimizer, o
             raise NotImplementedError(opt.distill)
 
         if opt.distill == 'gkdfd':
+            # Loss_total = alpha*Loss_GC + beta*L_DFD + Loss_Class.
             loss = opt.gamma * loss_cls + loss_kd
             losses_graph.update(loss_graph.item(), input.size(0))
             losses_feature.update(loss_feature.item(), input.size(0))

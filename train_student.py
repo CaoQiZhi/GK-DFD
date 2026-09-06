@@ -112,8 +112,10 @@ def parse_option():
                         help='PCA dimensionality reduction ratio')
     parser.add_argument('--gkdfd_k1', default=7, type=int,
                         help='number of intra-class neighbors')
+    parser.add_argument('--gkdfd_k2', default=56, type=int,
+                        help='number of inter-class neighbors (56 for the paper\'s 8x8 batches)')
     parser.add_argument('--gkdfd_inter_weight', default=-1.0, type=float,
-                        help='inter-class weight; non-positive selects k1/k2 automatically')
+                        help='legacy option retained for CLI compatibility; ignored by paper-faithful DFD')
     parser.add_argument('--gkdfd_dla_dim', default=0, type=int,
                         help='DLA output dimension; zero uses classes_per_batch - 1')
     parser.add_argument('--gkdfd_kd_weight', default=0.0, type=float,
@@ -147,6 +149,17 @@ def parse_option():
             raise ValueError('gkdfd_pca_ratio must be at least 1')
         if opt.gkdfd_k1 < 1:
             raise ValueError('gkdfd_k1 must be positive')
+        samples_per_class = opt.batch_size // opt.gkdfd_classes_per_batch
+        max_positive = samples_per_class - 1
+        max_negative = opt.batch_size - samples_per_class
+        if not 1 <= opt.gkdfd_k1 <= max_positive:
+            raise ValueError(
+                'gkdfd_k1 must be in [1, samples_per_class - 1]'
+            )
+        if not 1 <= opt.gkdfd_k2 <= max_negative:
+            raise ValueError(
+                'gkdfd_k2 must be in [1, batch_size - samples_per_class]'
+            )
 
     # set the path according to the environment
     if hostname.startswith('visiongpu'):

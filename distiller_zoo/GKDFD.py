@@ -8,6 +8,8 @@ import torch.nn.functional as F
 
 
 class FeatureEmbed(nn.Module):
+    """Map a branch feature to the graph node embedding space."""
+
     def __init__(self, dim_in, dim_out):
         super(FeatureEmbed, self).__init__()
         self.linear = nn.Linear(dim_in, dim_out)
@@ -18,7 +20,7 @@ class FeatureEmbed(nn.Module):
 
 
 class DenseTAGConv(nn.Module):
-    """One-hop topology adaptive graph convolution without a DGL dependency."""
+    """A dense one-hop TAG-style graph convolution."""
 
     def __init__(self, dim):
         super(DenseTAGConv, self).__init__()
@@ -36,15 +38,21 @@ class DenseTAGConv(nn.Module):
     def forward(self, feature, adjacency):
         degree = adjacency.sum(dim=1).clamp_min(1e-6)
         degree = degree.rsqrt()
-        adjacency = degree.unsqueeze(1) * adjacency * degree.unsqueeze(0)
-        propagated = torch.mm(adjacency, feature)
+        normalized = degree.unsqueeze(1) * adjacency * degree.unsqueeze(0)
+        propagated = torch.mm(normalized, feature)
         output = torch.mm(feature, self.weight[0])
         output = output + torch.mm(propagated, self.weight[1]) + self.bias
         return F.normalize(output, p=2, dim=1)
 
 
 class GKDFDLoss(nn.Module):
-    """Graph Knowledge based Discriminative Feature Distillation."""
+    """Graph Knowledge guided Discriminative Feature Distillation.
+
+    The implementation follows Sections 3.2--3.4 of the paper: teacher
+    probabilities and labels build one shared UEM/CAC topology; centered
+    teacher PCA defines a shared coordinate system; signed local alignment
+    matrices define the DFD eigenspace.
+    """
 
     def __init__(self, opt):
         super(GKDFDLoss, self).__init__()
@@ -53,11 +61,12 @@ class GKDFDLoss(nn.Module):
         self.gnn_s = DenseTAGConv(opt.feat_dim)
         self.gnn_t = DenseTAGConv(opt.feat_dim)
 
-        self.cac_scale = opt.gkdfd_cac_scale
-        self.pca_ratio = opt.gkdfd_pca_ratio
-        self.positive_neighbors = opt.gkdfd_k1
-        self.inter_weight = opt.gkdfd_inter_weight
-        self.dla_dim = opt.gkdfd_dla_dim
+        self.cac_scale = float(opt.gkdfd_cac_scale)
+        self.pca_ratio = float(opt.gkdfd_pca_ratio)
+        self.positive_neighbors = int(opt.gkdfd_k1)
+        k2 = getattr(opt, 'gkdfd_k2', None)
+        self.negative_neighbors = None if k2 is None else int(k2)
+        self.dla_dim = int(opt.gkdfd_dla_dim)
 
     @staticmethod
     def _eigh(matrix):
@@ -66,55 +75,58 @@ class GKDFDLoss(nn.Module):
             return torch.linalg.eigh(matrix)
         return torch.symeig(matrix, eigenvectors=True)
 
-    def _uem_adjacency(self, logits):
-        prediction = F.softmax(logits, dim=1)
+    def _uem_adjacency(self, logits, target=None):
+        """Build the shared adjacency using equations (3)--(7)."""
+        # Section 3.2.1 defines p_i as the model logits.  UEM therefore uses
+        # the raw teacher logits, rather than the softmax probabilities used
+        # by the older HKD prototype.
+        prediction = logits.detach()
         normalized = F.normalize(prediction, p=2, dim=1)
         cosine = torch.mm(normalized, normalized.t()).clamp(-1.0, 1.0)
         cosine = (1.0 + cosine) * 0.5
-
         euclidean = torch.cdist(prediction, prediction, p=2)
-        euclidean = 1.0 - torch.exp(-euclidean)
-        edge = cosine - euclidean
+        exp_distance = 1.0 - torch.exp(-euclidean)
+        edge = cosine - exp_distance
 
-        predicted_class = prediction.argmax(dim=1)
-        same_class = predicted_class.unsqueeze(1).eq(predicted_class.unsqueeze(0))
+        # ``target`` is required by CAC in the paper.  Falling back to the
+        # teacher argmax keeps this helper backward-compatible for callers
+        # that used the pre-paper prototype directly.
+        if target is None:
+            target = prediction.argmax(dim=1)
+        labels = target.detach().view(-1)
+        same_class = labels.unsqueeze(1).eq(labels.unsqueeze(0))
         edge = torch.where(same_class, edge, self.cac_scale * edge)
+        # Equation (7) retains only positive affinities; the positive diagonal
+        # is kept as a TAGConv self connection.
         return edge.clamp_min(0.0)
 
-    def _graph_representation(self, feature, logits, embed, graph_encoder):
+    def _graph_representation(self, feature, adjacency, embed, graph_encoder):
         node = embed(feature)
-        edge = self._uem_adjacency(logits)
-        graph = graph_encoder(node, edge)
-        return node, edge, graph
+        graph = graph_encoder(node, adjacency)
+        return node, graph
 
     def _pca_project(self, teacher, student):
+        """Center both branches and project with teacher-fitted PCA (eq. 9)."""
         with torch.no_grad():
             center = teacher.detach().mean(dim=0, keepdim=True)
             centered = teacher.detach() - center
             covariance = torch.mm(centered.t(), centered)
             covariance = covariance / float(max(teacher.size(0) - 1, 1))
-
-            eigenvalues, eigenvectors = self._eigh(covariance)
-            max_rank = min(
-                teacher.size(1),
-                max(teacher.size(0) - 1, 1),
-            )
+            _, eigenvectors = self._eigh(covariance)
+            max_rank = min(teacher.size(1), max(teacher.size(0) - 1, 1))
             reduced_dim = max(1, int(round(teacher.size(1) / self.pca_ratio)))
             reduced_dim = min(reduced_dim, max_rank)
-            eigenvalues = eigenvalues[-reduced_dim:].clamp_min(1e-5)
-            eigenvectors = eigenvectors[:, -reduced_dim:]
-            projection = eigenvectors * eigenvalues.rsqrt().unsqueeze(0)
+            projection = eigenvectors[:, -reduced_dim:]
 
         teacher_low = torch.mm(teacher - center, projection)
         student_low = torch.mm(student - center, projection)
         return teacher_low, student_low
 
-    def _relation_weights(self, teacher, target):
-        count = teacher.size(0)
-        distance = torch.cdist(teacher, teacher, p=2)
-        weights = teacher.new_zeros(count, count)
-        weights.fill_diagonal_(1.0)
-
+    def _select_neighbors(self, reference, target):
+        """Select nearest same-/different-class neighbours for every anchor."""
+        count = reference.size(0)
+        distance = torch.cdist(reference.detach(), reference.detach(), p=2)
+        selected = []
         for index in range(count):
             positive = torch.nonzero(
                 target.eq(target[index]), as_tuple=False
@@ -124,69 +136,94 @@ class GKDFDLoss(nn.Module):
                 target.ne(target[index]), as_tuple=False
             ).view(-1)
 
-            if positive.numel() > 0:
-                k1 = min(self.positive_neighbors, positive.numel())
-                order = torch.topk(
+            k1 = min(self.positive_neighbors, positive.numel())
+            k2_limit = negative.numel() if self.negative_neighbors is None else self.negative_neighbors
+            k2 = min(k2_limit, negative.numel())
+            if k1:
+                positive = positive[torch.topk(
                     distance[index, positive], k1, largest=False
-                ).indices
-                positive = positive[order]
-                weights[index, positive] = 1.0
+                ).indices]
             else:
-                k1 = 0
+                positive = positive[:0]
+            if k2:
+                negative = negative[torch.topk(
+                    distance[index, negative], k2, largest=False
+                ).indices]
+            else:
+                negative = negative[:0]
+            selected.append((positive, negative))
+        return selected
 
-            if negative.numel() > 0:
-                if self.inter_weight > 0:
-                    theta = self.inter_weight
-                else:
-                    theta = float(max(k1, 1)) / float(negative.numel())
-                weights[index, negative] = -theta
+    def _relation_weights(self, reference, target):
+        """Assemble L=sum_i S_i L_i S_i^T from equations (13)--(18)."""
+        count = reference.size(0)
+        alignment = reference.new_zeros((count, count))
+        for anchor, (positive, negative) in enumerate(
+            self._select_neighbors(reference, target)
+        ):
+            k1 = positive.numel()
+            k2 = negative.numel()
+            if k1 == 0 and k2 == 0:
+                continue
+            theta = float(k1) / float(k2) if k2 else 0.0
+            weights = reference.new_empty(k1 + k2)
+            if k1:
+                weights[:k1] = 1.0
+            if k2:
+                weights[k1:] = -theta
 
-        return weights
+            indices = torch.cat([
+                reference.new_tensor([anchor], dtype=torch.long),
+                positive,
+                negative,
+            ])
+            local = reference.new_zeros((indices.numel(), indices.numel()))
+            local[0, 0] = weights.sum()
+            local[0, 1:] = -weights
+            local[1:, 0] = -weights
+            local[1:, 1:] = torch.diag(weights)
+            alignment[indices.unsqueeze(1), indices.unsqueeze(0)] += local
 
-    def _discriminative_basis(self, teacher, weights, target):
+        return 0.5 * (alignment + alignment.t())
+
+    def _discriminative_basis(self, teacher, alignment, target):
+        """Return detached eigenvectors for the d smallest eigenvalues."""
         with torch.no_grad():
-            relation = 0.5 * (weights + weights.t())
-            relation.fill_diagonal_(0.0)
-            laplacian = torch.diag(relation.sum(dim=1)) - relation
-            objective = torch.mm(teacher.detach().t(), laplacian)
+            objective = torch.mm(teacher.detach().t(), alignment)
             objective = torch.mm(objective, teacher.detach())
             _, eigenvectors = self._eigh(objective)
-
             if self.dla_dim > 0:
                 output_dim = self.dla_dim
             else:
                 output_dim = max(target.detach().unique().numel() - 1, 1)
             output_dim = min(output_dim, teacher.size(1))
-            return eigenvectors[:, :output_dim]
+            return eigenvectors[:, :output_dim].detach()
 
     def _discriminative_loss(self, teacher, student, target):
-        teacher, student = self._pca_project(teacher, student)
+        teacher_low, student_low = self._pca_project(teacher, student)
         with torch.no_grad():
-            weights = self._relation_weights(teacher.detach(), target)
+            alignment = self._relation_weights(teacher_low.detach(), target)
             basis = self._discriminative_basis(
-                teacher.detach(), weights, target
+                teacher_low.detach(), alignment, target
             )
-
-        teacher = F.normalize(torch.mm(teacher, basis), p=2, dim=1)
-        student = F.normalize(torch.mm(student, basis), p=2, dim=1)
-        distance = (
-            teacher.pow(2).sum(dim=1, keepdim=True)
-            + student.pow(2).sum(dim=1).unsqueeze(0)
-            - 2.0 * torch.mm(teacher, student.t())
-        ).clamp_min(0.0)
-        return (distance * weights).sum() / weights.abs().sum().clamp_min(1.0)
+        teacher_projected = torch.mm(teacher_low, basis)
+        student_projected = torch.mm(student_low, basis)
+        return (teacher_projected - student_projected).pow(2).sum(dim=1).mean()
 
     def forward(self, feature_s, logit_s, feature_t, logit_t, target):
-        node_s, edge_s, graph_s = self._graph_representation(
-            feature_s, logit_s, self.embed_s, self.gnn_s
+        # Algorithm 1, step 3: teacher predictions and labels define one
+        # topology shared by both graph branches.
+        adjacency = self._uem_adjacency(logit_t, target)
+        _, graph_s = self._graph_representation(
+            feature_s, adjacency, self.embed_s, self.gnn_s
         )
-        node_t, edge_t, graph_t = self._graph_representation(
-            feature_t, logit_t, self.embed_t, self.gnn_t
+        _, graph_t = self._graph_representation(
+            feature_t.detach(), adjacency, self.embed_t, self.gnn_t
         )
 
-        loss_node = F.mse_loss(node_s, node_t)
-        loss_edge = F.mse_loss(edge_s, edge_t)
-        loss_global = F.mse_loss(graph_s, graph_t)
-        loss_graph = loss_node + loss_edge + loss_global
+        # Equation (22), normalized Frobenius graph consistency loss.
+        loss_graph = (graph_t - graph_s).pow(2).sum() / float(
+            graph_t.size(0) * graph_t.size(1)
+        )
         loss_feature = self._discriminative_loss(graph_t, graph_s, target)
         return loss_graph, loss_feature
